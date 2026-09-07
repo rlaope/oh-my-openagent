@@ -59,23 +59,37 @@ export class IdleInjectionCoordinator {
   readonly #scheduleFlush: FlushScheduler
   #flushScheduled = false
   #soonScheduled = false
+  #disposed = false
 
   constructor(deliver: IdleInjectionDelivery, options: IdleInjectionCoordinatorOptions = {}) {
     this.#deliver = deliver
     this.#scheduleFlush = options.scheduleFlush ?? ((flush) => queueMicrotask(flush))
   }
 
+  /**
+   * Prevent any future flushes from delivering. Clears the pending queue so deferred callbacks
+   * that fire after disposal are harmless no-ops instead of stale-generation throws.
+   */
+  dispose(): void {
+    this.#disposed = true
+    this.#pending.clear()
+    this.#flushScheduled = false
+    this.#soonScheduled = false
+  }
+
   enqueue(injection: IdleInjection): void {
+    if (this.#disposed) return
     this.#pending.set(injection.key, injection)
   }
 
   // Streaming-safe producers enqueue then request a batched steer at the next tool-call boundary.
   // Repeated requests before the deferred pass runs coalesce to a single flush.
   scheduleFlush(): void {
-    if (this.#flushScheduled) return
+    if (this.#flushScheduled || this.#disposed) return
     this.#flushScheduled = true
     this.#scheduleFlush(() => {
       this.#flushScheduled = false
+      if (this.#disposed) return
       this.#flush("steer")
     })
   }
@@ -84,10 +98,11 @@ export class IdleInjectionCoordinator {
   // senpi's print mode can decide the session is over (the windowed timer is not - live-driver proven),
   // while still batching every notification that becomes ready in the same tick into one injection.
   flushSoon(): void {
-    if (this.#soonScheduled) return
+    if (this.#soonScheduled || this.#disposed) return
     this.#soonScheduled = true
     queueMicrotask(() => {
       this.#soonScheduled = false
+      if (this.#disposed) return
       this.flushOnIdle()
     })
   }
@@ -101,12 +116,16 @@ export class IdleInjectionCoordinator {
   }
 
   // Flush the whole queue as one idle-edge steer. Returns how many queued items were collapsed (0 = no-op).
+  get disposed(): boolean {
+    return this.#disposed
+  }
+
   flushOnIdle(): number {
     return this.#flush("steer")
   }
 
   #flush(deliverAs: "steer" | "followUp"): number {
-    if (this.#pending.size === 0) return 0
+    if (this.#disposed || this.#pending.size === 0) return 0
     const ordered = [...this.#pending.values()].sort(
       (left, right) => SOURCE_RANK[left.source] - SOURCE_RANK[right.source],
     )

@@ -207,6 +207,54 @@ describe("IdleInjectionCoordinator", () => {
     expect(scheduledCount).toBe(2)
   })
 
+  it("#given a disposed coordinator #when a deferred flush fires #then it is a harmless no-op (no stale-generation crash)", () => {
+    // Reproduces https://github.com/code-yeongyu/oh-my-openagent/issues/7932
+    const calls: DeliveredCall[] = []
+    const scheduled: Array<() => void> = []
+    const coordinator = new IdleInjectionCoordinator(
+      (message, options) => calls.push({ content: message.content, options }),
+      { scheduleFlush: (flush) => scheduled.push(flush) },
+    )
+    coordinator.enqueue({ key: "ulw", source: "ulw-continuation", content: "continue" })
+    coordinator.scheduleFlush()
+
+    // Simulate reload: dispose before the deferred flush fires
+    coordinator.dispose()
+    expect(coordinator.disposed).toBe(true)
+    expect(coordinator.pendingCount()).toBe(0)
+
+    // The deferred flush fires — must be a no-op, not a throw
+    for (const flush of scheduled) flush()
+    expect(calls).toHaveLength(0)
+  })
+
+  it("#given a disposed coordinator #when enqueue and scheduleFlush are called #then they are silently ignored", () => {
+    const calls: DeliveredCall[] = []
+    let scheduledCount = 0
+    const coordinator = new IdleInjectionCoordinator(
+      (message, options) => calls.push({ content: message.content, options }),
+      { scheduleFlush: () => { scheduledCount++ } },
+    )
+    coordinator.dispose()
+
+    coordinator.enqueue({ key: "st_1", source: "task-completion", content: "task" })
+    coordinator.scheduleFlush()
+    coordinator.flushSoon()
+
+    expect(coordinator.pendingCount()).toBe(0)
+    expect(scheduledCount).toBe(0)
+    expect(calls).toHaveLength(0)
+  })
+
+  it("#given a disposed coordinator #when flushOnIdle is called directly #then it returns 0", () => {
+    const { coordinator, calls } = createCoordinator()
+    coordinator.enqueue({ key: "st_1", source: "task-completion", content: "task" })
+    coordinator.dispose()
+
+    expect(coordinator.flushOnIdle()).toBe(0)
+    expect(calls).toHaveLength(0)
+  })
+
   it("#given an async delivery rejection #when the queue flushes #then the producer receives a failure receipt and onFlushed does not run", async () => {
     const events: string[] = []
     let rejectDelivery: (error: Error) => void = () => undefined

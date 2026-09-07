@@ -101,6 +101,13 @@ export function composeOmoSenpiExtension(
       { scheduleFlush: (flush) => void setTimeout(flush, 200) },
     )
 
+    // Dispose the coordinator on session shutdown so deferred flushes that fire after reload
+    // hit a disposed guard instead of calling into a stale extension generation's pi.sendMessage.
+    // See: https://github.com/code-yeongyu/oh-my-openagent/issues/7932
+    pi.on("session_shutdown", () => {
+      idleCoordinator.dispose()
+    })
+
     // Warm the pi-tui lazy boundary once for the whole extension, before any component registers.
     // Renderers across several components (fallback-architect notices, memory worker entries, task
     // renderers) read the pi-tui namespace synchronously from render callbacks, and any of those
